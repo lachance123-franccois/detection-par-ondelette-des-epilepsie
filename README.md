@@ -334,7 +334,7 @@ Ce ratio est le **marqueur le plus discriminant** dans la littérature (Shoeb, 2
 L'entropie spectrale mesure le degré de désordre du spectre de puissance normalisé. Elle est définie comme l'entropie de Shannon appliquée à la distribution spectrale normalisée `p(f) = S_xx(f) / Σ S_xx(f)` :
 
 ```
-H_spec = −Σ_k p(f_k) · log₂(p(f_k))    [bits]
+!H_spec = −Σ_k p(f_k) · log₂(p(f_k))    [bits]
 ```
 
 **Interprétation physique :** Un spectre plat (bruit blanc) a une entropie maximale `H_max = log₂(N_bins)`. Un signal ictal, bien que de grande amplitude, est **spectralement concentré** autour des fréquences de décharge synchrone → l'entropie **diminue** lors d'une crise. C'est un indicateur contre-intuitif mais robuste.
@@ -362,12 +362,12 @@ Ces 5 features CWT complètent les 5 features Welch avec une meilleure résoluti
 Le vecteur final de **16 features** est :
 
 ```
-f = [E_δ, E_θ, E_α, E_β, E_γ,          ← 5 énergies Welch
-     R_γ/α,                              ← 1 ratio spectral
-     H_spec,                             ← 1 entropie spectrale
+f = [E_δ, E_θ, E_α, E_β, E_γ,          5 énergies Welch
+     R_γ/α,                              1 ratio spectral
+     H_spec,                             1 entropie spectrale
      E_CWT_δ, E_CWT_θ, E_CWT_α,
-     E_CWT_β, E_CWT_γ,                  ← 5 énergies CWT
-     RMS, kurtosis, ZCR]                 ← 3 statistiques temporelles
+     E_CWT_β, E_CWT_γ,                  5 énergies CWT
+     RMS, kurtosis, ZCR]                3 statistiques temporelles
 ```
 
 ---
@@ -446,10 +446,10 @@ La métrique d'optimisation est le **F1-score** (et non l'accuracy) car les clas
 En contexte clinique, les conséquences d'une **fausse alarme** (segment normal classé comme crise) et d'un **manqué** (crise non détectée) sont asymétriques. On utilise donc :
 
 ```
-Sensibilité (Recall)    = TP / (TP + FN)    → minimiser les crises manquées
-Spécificité             = TN / (TN + FP)    → minimiser les fausses alarmes
-F1-score                = 2·P·R / (P+R)     → compromis global
-AUC-ROC                                     → performance indépendante du seuil
+Sensibilité (Recall)    = TP / (TP + FN)    minimiser les crises manquées
+Spécificité             = TN / (TN + FP)    minimiser les fausses alarmes
+F1-score                = 2·P·R / (P+R)     compromis global
+AUC-ROC                                     performance indépendante du seuil
 ```
 
 ### 7.2 Objectifs de performance
@@ -475,8 +475,7 @@ Pour éviter le **data leakage** inter-patient (un modèle entraîné sur des se
 
 ```bash
 git clone https://github.com/ton-user/detection-par-ondelette-des-epilepsie.git
-cd eeg-seizure-detection
-pip install -r requirements.txt
+cd detection-par-ondelette-des-epilepsie
 ```
 
 **Dépendances :**
