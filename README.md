@@ -492,31 +492,98 @@ mne>=1.5          # lecture des fichiers EDF/EDF+ du dataset CHB-MIT
 ### 8.2 Utilisation rapide — données synthétiques
 
 ```python
-from pipeline import EEGPipeline
+class GenerateurDonneesEEG:
 
-# Instanciation avec paramètres par défaut (fs=256 Hz, T_w=4s, overlap=0.5)
-pipe = EEGPipeline(fs=256, window_sec=4.0, overlap=0.5)
+    def __init__(self, frequence_echantillonnage=256, duree_segment=4.0, graine_aleatoire=42):
+        self.frequence_echantillonnage = frequence_echantillonnage
+        self.duree_segment = duree_segment
+        self.nombre_echantillons = int(frequence_echantillonnage * duree_segment)
+        self.axe_temps = np.linspace(
+            start    = 0,
+            stop     = duree_segment,
+            num      = self.nombre_echantillons,
+            endpoint = False
+        )
+        self.generateur_aleatoire = np.random.default_rng(graine_aleatoire)
 
-# Prédiction sur un fichier EDF (format CHB-MIT)
-result = pipe.predict_from_edf("chb01_03.edf", channel="FP1-F7")
-print(result)
-# {'label': 'ictal', 'confidence': 0.97, 'features': {...}, 'onset_sec': 2996.0}
+    def generer_signal_interictal(self):
+        onde_delta = (0.8 *
+                      np.sin(2 * np.pi * 2 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
 
-# Simulation : génère un signal synthétique et trace le spectrogramme
-pipe.demo_synthetic(duration_sec=30, show_wavelet=True)
+        onde_theta = (0.5 *
+                      np.sin(2 * np.pi * 6 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        onde_alpha = (1.2 *
+                      np.sin(2 * np.pi * 10 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        onde_beta  = (0.3 *
+                      np.sin(2 * np.pi * 20 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        bruit = 0.4 * self.generateur_aleatoire.standard_normal(self.nombre_echantillons)
+        signal_final = onde_delta + onde_theta + onde_alpha + onde_beta + bruit
+
+        return signal_final
+
+    def generer_signal_ictal(self):
+        fond_attenue = self.generer_signal_interictal() * 0.3
+
+        decharge_gamma_initiale = (
+            2.5
+            * np.sin(2 * np.pi * 40 * self.axe_temps)
+            * np.exp(-self.axe_temps * 0.3)
+        )
+
+        decharge_gamma_soutenue = (
+            1.8
+            * np.sin(2 * np.pi * 55 * self.axe_temps + 0.5)
+            * (1 - np.exp(-self.axe_temps * 0.8))
+        )
+
+        pointe_onde = (
+            3.0
+            * np.sin(2 * np.pi * 3 * self.axe_temps)
+            * np.abs(np.sin(2 * np.pi * 3 * self.axe_temps))
+        )
+
+        enveloppe_amplitude = np.linspace(0.5, 2.0, self.nombre_echantillons)
+        signal_crise = (fond_attenue + decharge_gamma_initiale
+                        + decharge_gamma_soutenue + pointe_onde) * enveloppe_amplitude
+
+        return signal_crise
+
+    def construire_jeu_de_donnees(self, nb_segments_normaux=150, nb_segments_crise=60):
+        liste_segments  = []
+        liste_etiquettes = []
+
+        for _ in range(nb_segments_normaux):
+            liste_segments.append(self.generer_signal_interictal())
+            liste_etiquettes.append(0)
+
+        for _ in range(nb_segments_crise):
+            liste_segments.append(self.generer_signal_ictal())
+            liste_etiquettes.append(1)
+
+        donnees_brutes = np.array(liste_segments)
+        etiquettes     = np.array(liste_etiquettes)
+
+        return donnees_brutes, etiquettese)
 ```
 
 ### 8.3 Visualisation
 
 ```python
 # Spectrogramme STFT
-pipe.plot_spectrogram(x, title="EEG Ictal — Patient chb01")
+plot_spectrogram(x, title="EEG Ictal — Patient chb01")
 
 # Scalogramme CWT (ondelette de Morlet)
-pipe.plot_scalogram(x, scales=np.arange(1, 128))
+plot_scalogram(x, scales=np.arange(1, 128))
 
 # Comparaison interictal vs ictal
-pipe.plot_comparison(x_normal, x_seizure)
+plot_comparison(x_normal, x_seizure)
 ```
 
 
