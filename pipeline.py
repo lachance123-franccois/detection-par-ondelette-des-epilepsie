@@ -28,7 +28,85 @@ from sklearn.utils import resample
 
 import os
 import json
+class GenerateurDonneesEEG:
 
+    def __init__(self, frequence_echantillonnage=256, duree_segment=4.0, graine_aleatoire=42):
+        self.frequence_echantillonnage = frequence_echantillonnage
+        self.duree_segment = duree_segment
+        self.nombre_echantillons = int(frequence_echantillonnage * duree_segment)
+        self.axe_temps = np.linspace(
+            start    = 0,
+            stop     = duree_segment,
+            num      = self.nombre_echantillons,
+            endpoint = False
+        )
+        self.generateur_aleatoire = np.random.default_rng(graine_aleatoire)
+
+    def generer_signal_interictal(self):
+        onde_delta = (0.8 *
+                      np.sin(2 * np.pi * 2 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        onde_theta = (0.5 *
+                      np.sin(2 * np.pi * 6 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        onde_alpha = (1.2 *
+                      np.sin(2 * np.pi * 10 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        onde_beta  = (0.3 *
+                      np.sin(2 * np.pi * 20 * self.axe_temps
+                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
+
+        bruit = 0.4 * self.generateur_aleatoire.standard_normal(self.nombre_echantillons)
+        signal_final = onde_delta + onde_theta + onde_alpha + onde_beta + bruit
+
+        return signal_final
+
+    def generer_signal_ictal(self):
+        fond_attenue = self.generer_signal_interictal() * 0.3
+
+        decharge_gamma_initiale = (
+            2.5
+            * np.sin(2 * np.pi * 40 * self.axe_temps)
+            * np.exp(-self.axe_temps * 0.3)
+        )
+
+        decharge_gamma_soutenue = (
+            1.8
+            * np.sin(2 * np.pi * 55 * self.axe_temps + 0.5)
+            * (1 - np.exp(-self.axe_temps * 0.8))
+        )
+
+        pointe_onde = (
+            3.0
+            * np.sin(2 * np.pi * 3 * self.axe_temps)
+            * np.abs(np.sin(2 * np.pi * 3 * self.axe_temps))
+        )
+
+        enveloppe_amplitude = np.linspace(0.5, 2.0, self.nombre_echantillons)
+        signal_crise = (fond_attenue + decharge_gamma_initiale
+                        + decharge_gamma_soutenue + pointe_onde) * enveloppe_amplitude
+
+        return signal_crise
+
+    def construire_jeu_de_donnees(self, nb_segments_normaux=150, nb_segments_crise=60):
+        liste_segments  = []
+        liste_etiquettes = []
+
+        for _ in range(nb_segments_normaux):
+            liste_segments.append(self.generer_signal_interictal())
+            liste_etiquettes.append(0)
+
+        for _ in range(nb_segments_crise):
+            liste_segments.append(self.generer_signal_ictal())
+            liste_etiquettes.append(1)
+
+        donnees_brutes = np.array(liste_segments)
+        etiquettes     = np.array(liste_etiquettes)
+
+        return donnees_brutes, etiquettes
 
 class PretraiteurEEG:
 
@@ -189,3 +267,62 @@ class ExtracteurCaracteristiques:
         entropie = -np.sum(densite_normalisee * np.log2(densite_normalisee + 1e-12))
 
         return entropie
+
+class ClassifieurEpilepsie:
+
+    def __init__(self, cv_folds=5, random_state=42):
+        self.cv_folds = cv_folds
+        self.random_state = random_state
+        self.model = self._creer_pipeline()
+
+    def _creer_pipeline(self):
+
+        pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            ('svm', SVC(probability=True, kernel='rbf', random_state=self.random_state))
+        ])
+        return pipeline
+
+    def optimiser_et_entrainer(self, X, y):
+
+        param_grid = {
+            'svm__C': [0.1, 1, 10, 100],
+            'svm__gamma': ['scale', 'auto', 0.01, 0.1]
+        }
+        
+        recherche = GridSearchCV(
+            self.model, 
+            param_grid, 
+            cv=StratifiedKFold(self.cv_folds),
+            scoring='f1',
+            n_jobs=-1
+        )
+        
+        recherche.fit(X, y)
+        self.model = recherche.best_estimator_
+        return recherche.best_params_
+
+    def valider_croise(self, X, y):
+
+        y_pred = cross_val_predict(self.model, X, y, cv=self.cv_folds)
+        y_prob = cross_val_predict(self.model, X, y, cv=self.cv_folds, method='predict_proba')[:, 1]
+        return y_pred, y_prob
+
+
+if __name__ == "__main__":
+    
+    generateur = GenerateurDonneesEEG()
+    signaux_bruts, labels = generateur.construire_jeu_de_donnees()
+
+    pretraiteur = PretraiteurEEG()
+    signaux_propres = pretraiteur.pretraiter_tous_segments(signaux_bruts)
+
+    extracteur = ExtracteurCaracteristiques()
+    features = np.array([extracteur.extraire_un_segment(s) for s in signaux_propres])
+
+    classifieur = ClassifieurEpilepsie()
+    meilleurs_params = classifieur.optimiser_et_entrainer(features, labels)
+    y_pred, y_prob = classifieur.valider_croise(features, labels)
+
+    print(f"Meilleurs paramètres : {meilleurs_params}")
+    print(classification_report(labels, y_pred, target_names=['Normal', 'Crise']))
