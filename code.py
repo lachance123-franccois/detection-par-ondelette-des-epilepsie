@@ -1,328 +1,210 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from matplotlib.colors import LogNorm
-import warnings
-warnings.filterwarnings('ignore')
+"""
+Detection de crises epileptiques — version corrigee.
 
+Corrections par rapport a la version initiale :
+  1. Ajout de ExtracteurCaracteristiques.extraire_un_segment() (manquait -> crash)
+  2. Filtres en SOS au lieu de (b, a)  -> stabilite numerique a 0.5 Hz / fs=256
+  3. Validation croisee IMBRIQUEE      -> supprime la fuite d'information du GridSearch
+  4. class_weight='balanced'           -> jeu desequilibre 150/60
+  5. Comparaison a un modele naif      -> montre que la tache synthetique est triviale
+"""
+
+import numpy as np
 from scipy import signal as traitement_signal
-from scipy.io import loadmat
 import pywt
 
 from sklearn.svm import SVC
+from sklearn.dummy import DummyClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import (
-    StratifiedKFold,
-    GridSearchCV,
-    cross_val_predict
-)
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    roc_curve,
-    auc,
-    ConfusionMatrixDisplay
-)
+from sklearn.model_selection import StratifiedKFold, GridSearchCV, cross_val_score
+from sklearn.metrics import classification_report
 from sklearn.pipeline import Pipeline
-from sklearn.utils import resample
 
-import os
-import json
+import warnings
+warnings.filterwarnings("ignore")
+
+
+# =====================================================================
+# 1. Generateur de donnees SYNTHETIQUES  (ce ne sont PAS de vraies donnees)
+# =====================================================================
 class GenerateurDonneesEEG:
-
     def __init__(self, frequence_echantillonnage=256, duree_segment=4.0, graine_aleatoire=42):
-        self.frequence_echantillonnage = frequence_echantillonnage
-        self.duree_segment = duree_segment
-        self.nombre_echantillons = int(frequence_echantillonnage * duree_segment)
-        self.axe_temps = np.linspace(
-            start    = 0,
-            stop     = duree_segment,
-            num      = self.nombre_echantillons,
-            endpoint = False
-        )
-        self.generateur_aleatoire = np.random.default_rng(graine_aleatoire)
+        self.fs = frequence_echantillonnage
+        self.n = int(frequence_echantillonnage * duree_segment)
+        self.t = np.linspace(0, duree_segment, self.n, endpoint=False)
+        self.rng = np.random.default_rng(graine_aleatoire)
 
     def generer_signal_interictal(self):
-        onde_delta = (0.8 *
-                      np.sin(2 * np.pi * 2 * self.axe_temps
-                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
-
-        onde_theta = (0.5 *
-                      np.sin(2 * np.pi * 6 * self.axe_temps
-                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
-
-        onde_alpha = (1.2 *
-                      np.sin(2 * np.pi * 10 * self.axe_temps
-                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
-
-        onde_beta  = (0.3 *
-                      np.sin(2 * np.pi * 20 * self.axe_temps
-                             + self.generateur_aleatoire.uniform(0, 2 * np.pi)))
-
-        bruit = 0.4 * self.generateur_aleatoire.standard_normal(self.nombre_echantillons)
-        signal_final = onde_delta + onde_theta + onde_alpha + onde_beta + bruit
-
-        return signal_final
+        """Fond EEG normal : somme de rythmes delta/theta/alpha/beta + bruit blanc."""
+        s = 0.0
+        for amplitude, frequence in [(0.8, 2), (0.5, 6), (1.2, 10), (0.3, 20)]:
+            s = s + amplitude * np.sin(2 * np.pi * frequence * self.t
+                                       + self.rng.uniform(0, 2 * np.pi))
+        return s + 0.4 * self.rng.standard_normal(self.n)
 
     def generer_signal_ictal(self):
-        fond_attenue = self.generer_signal_interictal() * 0.3
+        """Crise : fond attenue + decharges gamma + pointes-ondes 3 Hz,
+        le tout multiplie par une enveloppe croissante (0.5 -> 2.0)."""
+        fond = self.generer_signal_interictal() * 0.3
+        gamma_init = 2.5 * np.sin(2 * np.pi * 40 * self.t) * np.exp(-self.t * 0.3)
+        gamma_sout = 1.8 * np.sin(2 * np.pi * 55 * self.t + 0.5) * (1 - np.exp(-self.t * 0.8))
+        pointe_onde = 3.0 * np.sin(2 * np.pi * 3 * self.t) * np.abs(np.sin(2 * np.pi * 3 * self.t))
+        enveloppe = np.linspace(0.5, 2.0, self.n)
+        return (fond + gamma_init + gamma_sout + pointe_onde) * enveloppe
 
-        decharge_gamma_initiale = (
-            2.5
-            * np.sin(2 * np.pi * 40 * self.axe_temps)
-            * np.exp(-self.axe_temps * 0.3)
-        )
+    def construire_jeu_de_donnees(self, nb_normaux=150, nb_crise=60):
+        X = [self.generer_signal_interictal() for _ in range(nb_normaux)]
+        X += [self.generer_signal_ictal() for _ in range(nb_crise)]
+        y = [0] * nb_normaux + [1] * nb_crise
+        return np.array(X), np.array(y)
 
-        decharge_gamma_soutenue = (
-            1.8
-            * np.sin(2 * np.pi * 55 * self.axe_temps + 0.5)
-            * (1 - np.exp(-self.axe_temps * 0.8))
-        )
 
-        pointe_onde = (
-            3.0
-            * np.sin(2 * np.pi * 3 * self.axe_temps)
-            * np.abs(np.sin(2 * np.pi * 3 * self.axe_temps))
-        )
-
-        enveloppe_amplitude = np.linspace(0.5, 2.0, self.nombre_echantillons)
-        signal_crise = (fond_attenue + decharge_gamma_initiale
-                        + decharge_gamma_soutenue + pointe_onde) * enveloppe_amplitude
-
-        return signal_crise
-
-    def construire_jeu_de_donnees(self, nb_segments_normaux=150, nb_segments_crise=60):
-        liste_segments  = []
-        liste_etiquettes = []
-
-        for _ in range(nb_segments_normaux):
-            liste_segments.append(self.generer_signal_interictal())
-            liste_etiquettes.append(0)
-
-        for _ in range(nb_segments_crise):
-            liste_segments.append(self.generer_signal_ictal())
-            liste_etiquettes.append(1)
-
-        donnees_brutes = np.array(liste_segments)
-        etiquettes     = np.array(liste_etiquettes)
-
-        return donnees_brutes, etiquettes
-
+# =====================================================================
+# 2. Pretraitement
+# =====================================================================
 class PretraiteurEEG:
+    def __init__(self, fs=256, f_basse=0.5, f_haute=70.0, f_reseau=50.0, ordre=4):
+        self.fs = fs
+        nyq = fs / 2
+        # CORRECTION 2 : forme SOS. En forme (b, a), un Butterworth d'ordre 4
+        # avec une coupure a 0.5/128 = 0.004 accumule des erreurs d'arrondi
+        # sur les coefficients et peut devenir instable.
+        self.sos_bp = traitement_signal.butter(
+            ordre, [f_basse / nyq, f_haute / nyq], btype="band", output="sos")
+        b, a = traitement_signal.iirnotch(f_reseau / nyq, Q=30)
+        self.sos_notch = traitement_signal.tf2sos(b, a)
 
-    def __init__(self,
-                 frequence_echantillonnage = 256,
-                 frequence_coupure_basse   = 0.5,
-                 frequence_coupure_haute   = 70.0,
-                 frequence_reseau          = 50.0,
-                 ordre_filtre              = 4):
+    def filtrer_signal(self, x):
+        # filtfilt / sosfiltfilt : filtrage aller-retour => phase nulle.
+        # Indispensable des qu'on veut preserver la chronologie des evenements.
+        x = traitement_signal.sosfiltfilt(self.sos_bp, x)
+        return traitement_signal.sosfiltfilt(self.sos_notch, x)
 
-        self.frequence_echantillonnage = frequence_echantillonnage
-        self.frequence_coupure_basse   = frequence_coupure_basse
-        self.frequence_coupure_haute   = frequence_coupure_haute
-        self.frequence_reseau          = frequence_reseau
-        self.ordre_filtre              = ordre_filtre
-        self._concevoir_filtres()
+    def normaliser_zscore(self, x):
+        return (x - x.mean()) / (x.std() + 1e-8)
 
-    def _concevoir_filtres(self):
-        frequence_nyquist = self.frequence_echantillonnage / 2
-        freq_normalisee_basse = self.frequence_coupure_basse  / frequence_nyquist
-        freq_normalisee_haute = self.frequence_coupure_haute  / frequence_nyquist
+    def pretraiter_tous_segments(self, X):
+        return np.array([self.normaliser_zscore(self.filtrer_signal(seg)) for seg in X])
 
-        (self.coefficients_b_passebande,
-         self.coefficients_a_passebande) = traitement_signal.butter(
-            self.ordre_filtre,
-            [freq_normalisee_basse, freq_normalisee_haute],
-            btype='band'
-        )
 
-        freq_reseau_normalisee = self.frequence_reseau / frequence_nyquist
-        (self.coefficients_b_notch,
-         self.coefficients_a_notch) = traitement_signal.iirnotch(
-            freq_reseau_normalisee,
-            Q = 30
-        )
-
-    def filtrer_signal(self, signal_eeg):
-        signal_filtre = traitement_signal.filtfilt(
-            self.coefficients_b_passebande,
-            self.coefficients_a_passebande,
-            signal_eeg
-        )
-
-        signal_filtre = traitement_signal.filtfilt(
-            self.coefficients_b_notch,
-            self.coefficients_a_notch,
-            signal_filtre
-        )
-
-        return signal_filtre
-
-    def normaliser_zscore(self, signal_eeg):
-        moyenne    = signal_eeg.mean()
-        ecart_type = signal_eeg.std()
-        signal_normalise = (signal_eeg - moyenne) / (ecart_type + 1e-8)
-
-        return signal_normalise
-
-    def pretraiter_tous_segments(self, matrice_signaux):
-        segments_pretraites = np.array([
-            self.normaliser_zscore(
-                self.filtrer_signal(segment)
-            )
-            for segment in matrice_signaux
-        ])
-
-        return segments_pretraites
-
+# =====================================================================
+# 3. Analyse temps-frequence
+# =====================================================================
 class AnalyseurTempsFrequence:
+    BANDES = {"delta": (0.5, 4.0), "theta": (4.0, 8.0), "alpha": (8.0, 13.0),
+              "beta": (13.0, 30.0), "gamma": (30.0, 70.0)}
 
-    BANDES_CEREBRALES = {
-        'delta' : (0.5,  4.0),
-        'theta' : (4.0,  8.0),
-        'alpha' : (8.0,  13.0),
-        'beta'  : (13.0, 30.0),
-        'gamma' : (30.0, 70.0),
-    }
+    def __init__(self, fs=256, nperseg=128, noverlap=64, ondelette="cmor1.5-1.0"):
+        self.fs, self.nperseg, self.noverlap, self.ondelette = fs, nperseg, noverlap, ondelette
 
-    def __init__(self,
-                 frequence_echantillonnage = 256,
-                 taille_fenetre_stft       = 128,
-                 recouvrement_stft         = 64,
-                 type_ondelette            = 'cmor1.5-1.0'):
+    def calculer_stft(self, x):
+        f, t, Z = traitement_signal.stft(x, fs=self.fs, window="hann",
+                                         nperseg=self.nperseg, noverlap=self.noverlap)
+        return f, t, np.abs(Z) ** 2
 
-        self.frequence_echantillonnage = frequence_echantillonnage
-        self.taille_fenetre_stft       = taille_fenetre_stft
-        self.recouvrement_stft         = recouvrement_stft
-        self.type_ondelette            = type_ondelette
+    def calculer_cwt(self, x, n_echelles=64):
+        """ATTENTION : c'est une CWT (ondelette de Morlet complexe), PAS une DWT."""
+        f = np.logspace(np.log10(0.5), np.log10(70), n_echelles)
+        echelles = pywt.frequency2scale(self.ondelette, f / self.fs)
+        coefs, _ = pywt.cwt(x, scales=echelles, wavelet=self.ondelette,
+                            sampling_period=1 / self.fs)
+        return f, np.abs(coefs) ** 2
 
-    def calculer_stft(self, signal_eeg):
-        vecteur_frequences, vecteur_temps_stft, coefficients_complexes = traitement_signal.stft(
-            signal_eeg,
-            fs       = self.frequence_echantillonnage,
-            window   = 'hann',
-            nperseg  = self.taille_fenetre_stft,
-            noverlap = self.recouvrement_stft
-        )
+    def energie_par_bande(self, f, P):
+        return {nom: P[(f >= lo) & (f <= hi), :].mean()
+                for nom, (lo, hi) in self.BANDES.items()}
 
-        matrice_puissance = np.abs(coefficients_complexes) ** 2
 
-        return vecteur_frequences, vecteur_temps_stft, matrice_puissance
-
-    def calculer_cwt(self, signal_eeg, nombre_echelles=64):
-        vecteur_frequences_cwt = np.logspace(
-            np.log10(0.5),
-            np.log10(70),
-            nombre_echelles
-        )
-
-        echelles_ondelettes = pywt.frequency2scale(
-            self.type_ondelette,
-            vecteur_frequences_cwt / self.frequence_echantillonnage
-        )
-
-        coefficients_cwt, _ = pywt.cwt(
-            signal_eeg,
-            scales           = echelles_ondelettes,
-            wavelet          = self.type_ondelette,
-            sampling_period  = 1 / self.frequence_echantillonnage
-        )
-
-        matrice_puissance_cwt = np.abs(coefficients_cwt) ** 2
-
-        return vecteur_frequences_cwt, matrice_puissance_cwt
-
-    def calculer_energie_par_bande_stft(self, vecteur_frequences, matrice_puissance_stft):
-        energies_par_bande = {}
-
-        for nom_bande, (frequence_basse, frequence_haute) in self.BANDES_CEREBRALES.items():
-            masque_bande = (vecteur_frequences >= frequence_basse) & \
-                           (vecteur_frequences <= frequence_haute)
-            energie_bande = matrice_puissance_stft[masque_bande, :].mean()
-            energies_par_bande[nom_bande] = energie_bande
-
-        return energies_par_bande
-
-    def calculer_energie_par_bande_cwt(self, vecteur_frequences_cwt, matrice_puissance_cwt):
-        energies_par_bande_cwt = {}
-
-        for nom_bande, (frequence_basse, frequence_haute) in self.BANDES_CEREBRALES.items():
-            masque_bande_cwt = (vecteur_frequences_cwt >= frequence_basse) & \
-                               (vecteur_frequences_cwt <= frequence_haute)
-            energie_bande_cwt = matrice_puissance_cwt[masque_bande_cwt, :].mean()
-            energies_par_bande_cwt[nom_bande] = energie_bande_cwt
-
-        return energies_par_bande_cwt
-
+# =====================================================================
+# 4. Extraction de caracteristiques  (CORRECTION 1 : methode manquante)
+# =====================================================================
 class ExtracteurCaracteristiques:
+    NOMS = (["stft_" + b for b in AnalyseurTempsFrequence.BANDES]
+            + ["cwt_" + b for b in AnalyseurTempsFrequence.BANDES]
+            + ["entropie_spectrale", "ecart_type", "variation_amplitude"])
 
-    def __init__(self, frequence_echantillonnage=256):
-        self.analyseur_tf = AnalyseurTempsFrequence(
-            frequence_echantillonnage=frequence_echantillonnage
+    def __init__(self, fs=256):
+        self.tf = AnalyseurTempsFrequence(fs)
+
+    def calculer_entropie_spectrale(self, P):
+        """Entropie de Shannon de la DSP moyenne. Faible = energie concentree
+        sur quelques frequences (crise rythmique) ; elevee = spectre etale."""
+        dsp = P.mean(axis=1)
+        p = dsp / (dsp.sum() + 1e-12)
+        return -np.sum(p * np.log2(p + 1e-12))
+
+    def extraire_un_segment(self, x):
+        f_stft, _, P_stft = self.tf.calculer_stft(x)
+        f_cwt, P_cwt = self.tf.calculer_cwt(x)
+
+        e_stft = self.tf.energie_par_bande(f_stft, P_stft)
+        e_cwt = self.tf.energie_par_bande(f_cwt, P_cwt)
+
+        moitie = len(x) // 2
+        variation = x[moitie:].std() / (x[:moitie].std() + 1e-8)  # capte l'enveloppe croissante
+
+        return np.array(
+            [e_stft[b] for b in AnalyseurTempsFrequence.BANDES]
+            + [e_cwt[b] for b in AnalyseurTempsFrequence.BANDES]
+            + [self.calculer_entropie_spectrale(P_stft), x.std(), variation]
         )
 
-    def calculer_entropie_spectrale(self, matrice_puissance_stft):
-        densite_spectrale = matrice_puissance_stft.mean(axis=1)
-        densite_normalisee = densite_spectrale / (densite_spectrale.sum() + 1e-12)
-        entropie = -np.sum(densite_normalisee * np.log2(densite_normalisee + 1e-12))
+    def extraire_tous(self, X):
+        return np.array([self.extraire_un_segment(seg) for seg in X])
 
-        return entropie
 
-class ClassifieurEpilepsie:
+# =====================================================================
+# 5. Classification
+# =====================================================================
+def pipeline_svm(seed=42):
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        # CORRECTION 4 : jeu desequilibre (150 vs 60)
+        ("svm", SVC(kernel="rbf", probability=True,
+                    class_weight="balanced", random_state=seed)),
+    ])
 
-    def __init__(self, cv_folds=5, random_state=42):
-        self.cv_folds = cv_folds
-        self.random_state = random_state
-        self.model = self._creer_pipeline()
 
-    def _creer_pipeline(self):
+def validation_imbriquee(X, y, seed=42):
+    """CORRECTION 3 — LE POINT CRITIQUE.
 
-        pipeline = Pipeline([
-            ('scaler', StandardScaler()),
-            ('svm', SVC(probability=True, kernel='rbf', random_state=self.random_state))
-        ])
-        return pipeline
+    Version initiale : GridSearchCV sur TOUT X, puis cross_val_predict avec
+    l'estimateur deja optimise, sur les MEMES donnees. Les hyperparametres ont
+    donc "vu" les echantillons de test => performance surestimee.
 
-    def optimiser_et_entrainer(self, X, y):
-
-        param_grid = {
-            'svm__C': [0.1, 1, 10, 100],
-            'svm__gamma': ['scale', 'auto', 0.01, 0.1]
-        }
-        
-        recherche = GridSearchCV(
-            self.model, 
-            param_grid, 
-            cv=StratifiedKFold(self.cv_folds),
-            scoring='f1',
-            n_jobs=-1
-        )
-        
-        recherche.fit(X, y)
-        self.model = recherche.best_estimator_
-        return recherche.best_params_
-
-    def valider_croise(self, X, y):
-
-        y_pred = cross_val_predict(self.model, X, y, cv=self.cv_folds)
-        y_prob = cross_val_predict(self.model, X, y, cv=self.cv_folds, method='predict_proba')[:, 1]
-        return y_pred, y_prob
+    Ici : boucle externe pour estimer la performance, boucle interne pour
+    regler C et gamma. Aucun echantillon de test ne participe au reglage.
+    """
+    grille = {"svm__C": [0.1, 1, 10, 100], "svm__gamma": ["scale", "auto", 0.01, 0.1]}
+    interne = GridSearchCV(pipeline_svm(seed), grille,
+                           cv=StratifiedKFold(5, shuffle=True, random_state=seed),
+                           scoring="f1", n_jobs=-1)
+    externe = StratifiedKFold(5, shuffle=True, random_state=seed)
+    return cross_val_score(interne, X, y, cv=externe, scoring="f1")
 
 
 if __name__ == "__main__":
-    
-    generateur = GenerateurDonneesEEG()
-    signaux_bruts, labels = generateur.construire_jeu_de_donnees()
+    X_brut, y = GenerateurDonneesEEG().construire_jeu_de_donnees()
+    X_propre = PretraiteurEEG().pretraiter_tous_segments(X_brut)
+    F = ExtracteurCaracteristiques().extraire_tous(X_propre)
 
-    pretraiteur = PretraiteurEEG()
-    signaux_propres = pretraiteur.pretraiter_tous_segments(signaux_bruts)
+    print(f"Matrice de features : {F.shape}   (segments x descripteurs)")
+    print(f"Classes : {np.bincount(y)}  -> {100 * y.mean():.0f} % de crises\n")
 
-    extracteur = ExtracteurCaracteristiques()
-    features = np.array([extracteur.extraire_un_segment(s) for s in signaux_propres])
+    scores = validation_imbriquee(F, y)
+    print(f"F1 (CV imbriquee)      : {scores.mean():.4f} +/- {scores.std():.4f}")
 
-    classifieur = ClassifieurEpilepsie()
-    meilleurs_params = classifieur.optimiser_et_entrainer(features, labels)
-    y_pred, y_prob = classifieur.valider_croise(features, labels)
+    naif = cross_val_score(DummyClassifier(strategy="most_frequent"), F, y,
+                           cv=StratifiedKFold(5, shuffle=True, random_state=42),
+                           scoring="f1")
+    print(f"F1 (modele naif)       : {naif.mean():.4f}")
 
-    print(f"Meilleurs paramètres : {meilleurs_params}")
-    print(classification_report(labels, y_pred, target_names=['Normal', 'Crise']))
+    # Un seul descripteur suffit-il ? -> mesure la difficulte reelle de la tache
+    seuil = cross_val_score(pipeline_svm(), F[:, [-2]], y,
+                            cv=StratifiedKFold(5, shuffle=True, random_state=42),
+                            scoring="f1")
+    print(f"F1 (ecart-type SEUL)   : {seuil.mean():.4f}")
+
+    modele = pipeline_svm().fit(F, y)
+    print("\n" + classification_report(y, modele.predict(F),
+                                       target_names=["Normal", "Crise"]))
