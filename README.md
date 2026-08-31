@@ -8,7 +8,7 @@
 x(t) → Butterworth 0.5–70 Hz + Notch 50 Hz → z-score → STFT + CWT → f ∈ ℝ¹⁴ → SVM RBF → {Crise, Normal}
 ```
 
-> **Statut du projet.** Le code de ce dépôt fonctionne intégralement sur des signaux **générés analytiquement** (`GenerateurDonneesEEG`). Aucun EEG réel n'est lu : l'intégration du dataset CHB-MIT décrite en section 11 est une piste d'extension, pas une fonctionnalité existante. Les scores rapportés en section 8 (F1 = 1.00) mesurent la cohérence du pipeline sur un problème séparable par construction — **ils ne constituent pas une validation clinique**.
+> **Statut du projet.** Le code de ce dépôt fonctionne intégralement sur des signaux **générés analytiquement** (`GenerateurDonneesEEG`). Aucun EEG réel n'est lu : l'intégration du dataset CHB-MIT décrite en section 11 est une piste d'extension, pas une fonctionnalité existante. Les scores rapportés en section 8 (F1 = 1.00) mesurent la cohérence du pipeline sur un problème séparable par construction  **ils ne constituent pas une validation clinique**.
 
 ---
 
