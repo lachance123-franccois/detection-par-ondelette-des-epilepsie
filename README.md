@@ -85,7 +85,7 @@ Pendant une crise, la dynamique d'un ensemble neuronal est souvent modélisée p
 ẍ − μ(1 − x²)ẋ + ω²(t)·x = F(t)
 ```
 
-où `ω(t)` est la fréquence instantanée (qui augmente au début de la crise — phénomène de *frequency evolution*) et `μ` contrôle l'amplitude des oscillations non-linéaires. Ce modèle justifie pourquoi la **non-stationnarité** est intrinsèque au signal ictal : `ω(t)` varie dans le temps, rendant la FFT classique inadaptée.
+où `ω(t)` est la fréquence instantanée (qui augmente au début de la crise : phénomène de *frequency evolution*) et `μ` contrôle l'amplitude des oscillations non-linéaires. Ce modèle justifie pourquoi la **non-stationnarité** est intrinsèque au signal ictal : `ω(t)` varie dans le temps, rendant la FFT classique inadaptée.
 
 > Note d'implémentation : cette équation différentielle n'est **pas intégrée numériquement** dans le code. Le générateur en imite phénoménologiquement les effets observables (bouffées gamma, enveloppe d'amplitude croissante, pointe-onde à 3 Hz).
 
@@ -99,7 +99,7 @@ Le SNR d'un EEG de scalp est typiquement **−10 à +10 dB** : les sources d'art
 
 ### 3.1 Pourquoi la FFT est insuffisante
 
-La Transformée de Fourier classique suppose la **stationnarité du signal** — hypothèse radicalement violée par l'EEG :
+La Transformée de Fourier classique suppose la **stationnarité du signal**  hypothèse radicalement violée par l'EEG :
 
 ```
 X(f) = ∫_{-∞}^{+∞} x(t) · e^{-j2πft} dt
@@ -154,7 +154,7 @@ Avec `Δf = 1 Hz`, la bande δ (0.5–4 Hz) est couverte par 3 bins (1, 2, 3 Hz)
 w[n] = 0.5 · (1 − cos(2π·n / (N_w − 1)))    n = 0, ..., N_w − 1
 ```
 
-Un fenêtrage Hann avec 50 % de recouvrement satisfait la condition COLA (*Constant Overlap-Add*), ce qui rendrait la STFT inversible — propriété non exploitée ici, puisque seul le spectrogramme est utilisé.
+Un fenêtrage Hann avec 50 % de recouvrement satisfait la condition COLA (*Constant Overlap-Add*), ce qui rendrait la STFT inversible, propriété non exploitée ici, puisque seul le spectrogramme est utilisé.
 
 #### Limitation : résolution fixe
 
@@ -164,7 +164,7 @@ La STFT a une résolution temps-fréquence **uniforme** sur tout le plan (τ, f)
 
 ### 3.3 Transformée en ondelettes continues (CWT)
 
-> **Précision de vocabulaire.** Le code utilise `pywt.cwt` — une transformée en ondelettes **continue** avec ondelette de Morlet complexe. Ce n'est **pas** une DWT (décomposition dyadique de Mallat en approximations/détails). Le commentaire correspondant est explicite dans `calculer_cwt`.
+> **Précision de vocabulaire.** Le code utilise `pywt.cwt`  une transformée en ondelettes **continue** avec ondelette de Morlet complexe.
 
 ```
 CWT{x(t)}(a, b) = (1/√|a|) · ∫_{-∞}^{+∞} x(t) · ψ*((t − b)/a) dt
@@ -385,16 +385,15 @@ Le spectre est d'abord moyenné sur le temps (`P.mean(axis=1)`), puis normalisé
 
 ### 6.4 Descripteurs statistiques temporels
 
-| Descripteur | Formule | Intérêt | Invariant d'échelle ? |
+| Descripteur | Formule | Intérêt | Invariance  d'échelle  |
 |-------------|---------|---------|----------------------|
 | `aplatissement` (kurtosis) | `E[(x−μ)⁴] / (σ²)²` | Détecte les pointes (spikes) | ✅ oui |
 | `variation_amplitude` | `std(x[N/2:]) / std(x[:N/2])` | Capte l'enveloppe croissante du segment ictal | ✅ oui |
 
 `variation_amplitude` mesure directement l'effet de l'enveloppe `linspace(0.5, 2.0)` du générateur ictal. C'est un descripteur **spécifique aux données synthétiques** : sur de l'EEG réel, rien ne garantit qu'une crise soit croissante sur toute la fenêtre d'analyse (voir section 10).
 
-> **Descripteurs volontairement absents :** le **RMS** est constant (= 1) après z-score, donc inutilisable ; le **taux de passage par zéro** (ZCR) n'est pas implémenté — il est largement redondant avec les énergies de bande gamma.
-
-### 6.5 Vecteur complet — 14 descripteurs
+> **Descripteurs volontairement absents :** le **RMS** est constant (= 1) après z-score, donc inutilisable ; 
+### 6.5 Vecteur complet :  14 descripteurs
 
 L'ordre est celui de `ExtracteurCaracteristiques.NOMS` :
 
@@ -435,7 +434,7 @@ Pipeline([
 K(x, x') = exp(−γ · ‖x − x'‖²)    γ > 0
 ```
 
-Par le théorème de Mercer, ce noyau est défini positif et correspond à un produit scalaire dans un espace de Hilbert de dimension infinie : `K(x, x') = ⟨φ(x), φ(x')⟩_H`. Le développement en série de l'exponentielle montre que le mapping implicite `φ` contient des monômes de **tous les degrés** — d'où la capacité à séparer des classes non linéairement séparables dans `ℝ¹⁴`.
+Par le théorème de Mercer, ce noyau est défini positif et correspond à un produit scalaire dans un espace de Hilbert de dimension infinie : `K(x, x') = ⟨φ(x), φ(x')⟩_H`. Le développement en série de l'exponentielle montre que le mapping implicite `φ` contient des monômes de **tous les degrés**  d'où la capacité à séparer des classes non linéairement séparables dans `ℝ¹⁴`.
 
 `γ` contrôle la portée du noyau : grand `γ` → frontière très irrégulière (surapprentissage) ; petit `γ` → frontière lisse (sous-apprentissage).
 
@@ -522,7 +521,7 @@ F1 (cwt_gamma            SEUL) : 1.0000
 
 La seule conclusion défendable est : *le pipeline s'exécute de bout en bout, sans fuite de données, et retrouve la structure qu'on y a délibérément injectée.*
 
-### 8.5 Métriques cliniques — non mesurées ici
+### 8.5 Métriques cliniques  non mesurées ici
 
 En contexte clinique, les conséquences d'une **fausse alarme** et d'une **crise manquée** sont asymétriques :
 
@@ -536,7 +535,6 @@ F1-score             = 2·P·R / (P + R)    compromis global
 |----------|---------------------|--------------------------|
 | Sensibilité | > 90 % | ✅ (via `classification_report`) |
 | Spécificité | > 95 % | ✅ |
-| AUC-ROC | — | ⚠️ non calculée (le SVM expose pourtant `probability=True`) |
 | Latence de détection | < 10 s | ❌ nécessite un signal continu horodaté |
 | Taux de fausses alarmes | < 1/h | ❌ nécessite des heures d'enregistrement |
 
@@ -553,12 +551,12 @@ Sur données réelles, la fuite inter-patient est le principal piège : un modè
 ### 9.1 Installation
 
 ```bash
-git clone https://github.com/<votre-compte>/detection-par-ondelette-des-epilepsie.git
+git clone https://github.com/lachance123-franccois/detection-par-ondelette-des-epilepsie.git
 cd detection-par-ondelette-des-epilepsie
 pip install -r requirements.txt
 ```
 
-**Dépendances effectivement importées par `code.py` :**
+**Dépendances effectivement importées par `eeg_pipelin.py` :**
 
 ```
 numpy>=1.24
@@ -615,13 +613,11 @@ f_cwt,  P_cwt          = tf.calculer_cwt(X_propre[0])    # scalogramme
 
 ```
 .
-├── code.py      # pipeline complet (générateur, prétraitement, TF, features, SVM, validation)
+├── eeg_pipelin.py      # pipeline complet (générateur, prétraitement, TF, features, SVM, validation)
 └── README.md    # ce document
 ```
 
 Le projet tient en un seul module. Découpage naturel si le code venait à grossir : `generation.py`, `pretraitement.py`, `temps_frequence.py`, `descripteurs.py`, `classification.py`.
-
-> ⚠️ Le nom `code.py` **masque le module `code` de la bibliothèque standard** (console interactive). L'import fonctionne depuis le répertoire du projet, mais un renommage en `eeg_pipeline.py` éviterait tout conflit — pensez alors à adapter les imports de la section 9.3.
 
 ### 10.2 Correspondance code ↔ documentation
 
