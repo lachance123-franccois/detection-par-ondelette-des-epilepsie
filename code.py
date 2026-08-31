@@ -1,13 +1,10 @@
-"""
-Detection de crises epileptiques sur EEG synthetique.
-
+"""Detection de crises epileptiques sur EEG synthetique.
 Chaine complete : generation -> pretraitement (Butterworth + notch + z-score)
--> analyse temps-frequence (STFT + CWT de Morlet) -> 14 descripteurs -> SVM RBF
--> validation croisee imbriquee.
+== analyse temps-frequence (STFT + CWT de Morlet) -> 14 descripteurs -> SVM RBF
+== validation croisee imbriquee.
 
-ATTENTION : les donnees sont SYNTHETIQUES. Les scores obtenus (F1 ~ 1.0)
-mesurent la coherence du pipeline, pas une performance clinique.
-"""
+ATTENTION : les donnees sont SYNTHETIQUES. Les scores obtenus (F1 = 1.0)
+mesurent la coherence du pipeline, pas une performance clinique."""
 
 import warnings
 
